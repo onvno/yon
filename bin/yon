@@ -1,0 +1,289 @@
+#!/usr/bin/env node
+
+const debug = require('debug')('yon');
+const pkg = require('../package.json');
+const parseArgs = require('minimist');
+const npa = require('npm-package-arg');
+const tcpp = require('tcp-ping');
+const co = require('co');
+const fs = require('mz/fs');
+const thunkify = require("thunkify");
+const chalk = require('chalk');
+const execSync = require('child_process').execSync;
+const utils = require('../lib/utils');
+const util = require('util');
+const path = require('path');
+const installLocal = require('../lib/local_install');
+// const installGlobal = require('../lib/global_install');
+
+
+const IPCOMPANY = '172.20.18.23';
+const YON_MIRROR = 'https://registry.npm.taobao.org';
+const DEAFAULT_MIRROR = 'https://registry.npmjs.org';
+
+// process.argv返回,第三个为实际参数
+/*[ '/Users/AYA/.nvm/versions/node/v6.5.0/bin/node',
+  '/Users/AYA/Documents/yon/bin/yon',
+  'test' ]
+*/
+
+/**
+ * yon --version || yon -v
+ */
+const ver = process.argv[2];
+if(ver == '-v' || ver == '--version') {
+    console.log( 'Yonyou Package Manager(yon) : v' + pkg.version );
+    process.exit(0);
+}
+
+/**
+ * yon --help || yon -h
+ */
+ const help = process.argv[2];
+ if(help == '-h' || help == '--help' || help == undefined) {
+     console.log(
+   `
+   Usage:
+
+     yon install
+     yon install <pkg>
+     yon install <pkg>@<tag>
+     yon install <pkg>@<version>
+     yon install <pkg>@<version range>
+     yon install <folder>
+     yon install <tarball file>
+     yon install <tarball url>
+     yon install <git:// url>
+     yon install <github username>/<github project>
+
+   Options:
+
+     --save, -S, --save-dev, -D: save installed dependencies into package.json
+     -g, --global: install devDependencies to global directory
+
+   Others:
+
+     yon --registry: change default mirror address
+
+   `
+     );
+     process.exit(0);
+ }
+
+/**
+ * yon install XX
+ */
+
+const orignalArgv = process.argv.slice(3);
+const argv = parseArgs(orignalArgv, {
+    string: [
+        'registry'
+    ],
+    boolean: [
+        'global',
+        'save',
+        'save-dev',
+        'save-exact',
+        'production'
+    ],
+    alias: {
+        S: 'save',
+        D: 'save-dev',
+        E: 'save-exact',
+        g: 'global',
+        r: 'registry'
+    }
+})
+/*
+argv execute:
+cmd:yon install gulp utip
+result:
+{ _: [ 'gulp', 'utip' ],
+  global: false,
+  g: false,
+  save: false,
+  S: false,
+  'save-dev': false,
+  D: false }
+*/
+
+const pkgs = [];
+if (process.env.NPMINSTALL_BY_UPDATE) {
+    // ignore all package names on update
+    argv._ = [];
+}
+
+// format pkg
+for (const name of argv._) {
+    const p = npa(String(name));
+    pkgs.push({ name: p.name, version: p.rawSpec, type: p.type });
+}
+/*
+format execute:
+cmd:yon install gulp@latest utip@1.3.1
+result:
+[ { name: 'gulp', version: 'latest', type: 'tag' },
+  { name: 'utip', version: '1.3.1', type: 'version' } ]
+*/
+
+let = root = argv.root || process.cwd();
+const production = argv.production || process.env.NODE_ENV === 'production';
+
+const tping = thunkify(tcpp.ping);
+co(function* () {
+    // yield Promise.resolve(console.log("bar"));
+    const tp_res = yield tping({
+        address:IPCOMPANY,
+        timeout:100,
+        attempts:1
+    })
+    let registry = tp_res.avg ? YON_MIRROR : DEAFAULT_MIRROR;
+    console.log(chalk.green(registry));
+    let binaryMirrors = {};
+    binaryMirrors = yield utils.getBinaryMirrors(registry);
+
+    // 暂时没处理env & binaryMirrors
+    const config = {
+        registry,
+        pkgs,
+        root,
+        production
+    }
+
+    if(argv.global) {
+        // Global install
+        const meta = utils.getGlobalInstallMeta(argv.prefix);
+        config.targetDir = meta.targetDir;
+        config.binDir = meta.binDir;
+        // yield installGlobal(config);
+        console.log("global config:",config)
+    } else {
+        // Local install
+        if(pkgs.length === 0){
+            // package.json安装
+            const pkgFile = path.join(root, 'package.json');
+            const exists = yield fs.exists(pkgFile);
+            if(!exists) {
+                console.warn(chalk.yellow(`WARN package.json not exists: ${pkgFile}`));
+            }
+        }
+        // yield installLocal(config);
+        console.log("local config:",config)
+
+        if(pkgs.length > 0) {
+            // 此处去除了save-optional的支持
+            if(argv.save) {
+                yield updateDependencies(root, pkgs, 'dependencies', argv['save-exact'], config.remoteNames);
+            } else if(argv['save-dev']) {
+                yield updateDependencies(root, pkgs, 'devDependencies', argv['save-exact'], config.remoteNames);
+            }
+        }
+    }
+
+    process.on('exit', code => {
+        if(code !=0) {
+            fs.writeFileSync(path.join(root, 'npminstall-debug.log'), util.inspect(config, { depth: 2 }));
+        }
+    })
+
+}).catch(err => {
+    console.error(chalk.red(err.stack));
+    console.error(chalk.yellow('yon version: %s'), require('../package.json').version);
+    console.error(chalk.yellow('yon args: %s'), process.argv.join(' '));
+    process.exit(1);
+})
+
+
+
+
+function getStrictSSL() {
+  try {
+    const strictSSL = execSync('npm config get strict-ssl').toString().trim();
+    return strictSSL !== 'false';
+  } catch (err) {
+    debug(`exec npm config get strict-ssl ERROR: ${err.message}`);
+    return true;
+  }
+}
+
+function getVersionSavePrefix() {
+  try {
+    return execSync('npm config get save-prefix').toString().trim();
+  } catch (err) {
+    debug(`exec npm config get save-prefix ERROR: ${err.message}`);
+    return '^';
+  }
+}
+
+function* updateDependencies(root, pkgs, propName, saveExact, remoteNames) {
+    const savePrefix = saveExact ? '' : getVersionSavePrefix();//上半括号
+    const pkgFile = path.join(root, 'package.json');
+    const pkg = yield utils.readJSON(pkgFile);
+    const deps = pkg[propName] = pkg[propName] || {};
+    for (const item of pkgs) {
+        if ([ 'remote', 'hosted', 'git' ].indexOf(item.type) >= 0) {
+            item.name
+                ? deps[item.name] = item.version
+                : deps[remoteNames[item.version]] = item.version;
+        } else {
+            const pkgDir = item.type === 'local' ? item.version : path.join(root, 'node_modules', item.name);
+            const itemPkg = yield utils.readJSON(path.join(pkgDir, 'package.json'));
+            deps[itemPkg.name] = `${savePrefix}${itemPkg.version}`;
+        }
+    }
+    const newDeps = {};
+    for (const key of Object.keys(deps).sort()) {
+        newDeps[key] = deps[key];
+    }
+    pkg[propName] = newDeps;
+    yield fs.writeFile(pkgFile, JSON.stringify(pkg, null, 2) + '\n');
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// 命令参数解析
+/*
+node argv -a -bc foo --prefix=123test
+foo会被放置在`_`参数下
+-a,-bcd会返回{a:true,b:true,c:true}
+--prefix=123test会返回{prefix:"23test"}
+默认没有写入不会返回，如果加在boolean条件下，必然返回true / false
+*/
+
+// String解析：直接将内容转为字符串
+// npa(String(name))
