@@ -17,11 +17,13 @@ const installLocal = require('..').installLocal;
 const installGlobal = require('..').installGlobal;
 const pkgFile = require('../package.json');
 
-
+const thunkify = require("thunkify");
 const tcpp = require('tcp-ping');
 const IPCOMPANY = '172.20.18.23';
-const YON_MIRROR = 'https://registry.npm.taobao.org';
-const DEAFAULT_MIRROR = 'https://registry.npmjs.org';
+// const YON_MIRROR = 'https://registry.npm.taobao.org';
+const YON_MIRROR = 'http://maven.yonyou.com/nexus/content/groups/NPM-Yonyou-Repository/';
+// const DEAFAULT_MIRROR = 'https://registry.npmjs.org';
+const DEAFAULT_MIRROR = 'https://registry.npm.taobao.org';
 
 
 /**
@@ -145,22 +147,13 @@ const inChina = argv.china || !!process.env.npm_china;
 // if exists, override default china mirror url
 const customChinaMirrorUrl = argv['custom-china-mirror-url'];
 
-let registry = argv.registry || process.env.npm_registry;
-if (inChina) {
-  registry = registry || globalConfig.chineseRegistry;
-}
-// for env.npm_config_registry
-registry = registry || 'https://registry.npmjs.org';
 const env = {
-  npm_config_registry: registry,
-  // set npm_config_argv
-  // see https://github.com/cnpm/npminstall/issues/121#issuecomment-247836741
-  npm_config_argv: JSON.stringify({
-    remain: [],
-    cooked: orignalArgv,
-    original: orignalArgv,
-  }),
-};
+    npm_config_argv: JSON.stringify({
+      remain: [],
+      cooked: orignalArgv,
+      original: orignalArgv,
+    }),
+}
 // https://github.com/npm/npm/blob/2005f4ce11f6cdf142f8a77f4f7ee4996000fb57/lib/utils/lifecycle.js#L67
 env.npm_node_execpath = env.NODE = process.env.NODE || process.execPath;
 env.npm_execpath = require.main.filename;
@@ -178,7 +171,18 @@ for (const key in argv) {
 
 debug('argv: %j, env: %j', argv, env);
 
+const tping = thunkify(tcpp.ping);
 co(function* () {
+
+    const tp_res = yield tping({
+        address:IPCOMPANY,
+        timeout:100,
+        attempts:1
+    })
+    let registry = tp_res.avg ? YON_MIRROR : DEAFAULT_MIRROR;
+    env.npm_config_registry = registry;
+    console.log(chalk.green(registry));
+
   let binaryMirrors = {};
 
   if (inChina) {
