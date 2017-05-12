@@ -155,8 +155,8 @@ co(function* () {
         const meta = utils.getGlobalInstallMeta(argv.prefix);
         config.targetDir = meta.targetDir;
         config.binDir = meta.binDir;
-        // yield installGlobal(config);
-        console.log("global config:",config)
+        yield installGlobal(config);
+        // console.log("global config:",config)
     } else {
         // Local install
         if(pkgs.length === 0){
@@ -167,8 +167,8 @@ co(function* () {
                 console.warn(chalk.yellow(`WARN package.json not exists: ${pkgFile}`));
             }
         }
-        // yield installLocal(config);
-        console.log("local config:",config)
+        yield installLocal(config);
+        // console.log("local config:",config)
 
         if(pkgs.length > 0) {
             // 此处去除了save-optional的支持
