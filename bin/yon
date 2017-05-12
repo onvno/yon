@@ -14,7 +14,7 @@ const utils = require('../lib/utils');
 const util = require('util');
 const path = require('path');
 const installLocal = require('../lib/local_install');
-// const installGlobal = require('../lib/global_install');
+const installGlobal = require('../lib/global_install');
 
 
 const IPCOMPANY = '172.20.18.23';
