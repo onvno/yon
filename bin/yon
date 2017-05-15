@@ -2,35 +2,26 @@
 
 'use strict';
 
-const debug = require('debug')('npminstall:bin:install');
 const co = require('co');
-const npa = require('npm-package-arg');
 const chalk = require('chalk');
-const path = require('path');
-const util = require('util');
 const execSync = require('child_process').execSync;
-const fs = require('mz/fs');
-const parseArgs = require('minimist');
-const utils = require('../lib/utils');
-const globalConfig = require('../lib/config');
-const installLocal = require('..').installLocal;
-const installGlobal = require('..').installGlobal;
+const exec = require('child_process').exec;
 const pkgFile = require('../package.json');
-
 const thunkify = require("thunkify");
 const tcpp = require('tcp-ping');
+const request = require('request');
+const ora = require('ora');
+
 const IPCOMPANY = '172.20.18.23';
-// const YON_MIRROR = 'https://registry.npm.taobao.org';
 const YON_MIRROR = 'http://maven.yonyou.com/nexus/content/groups/NPM-Yonyou-Repository/';
 // const DEAFAULT_MIRROR = 'https://registry.npmjs.org';
 const DEAFAULT_MIRROR = 'https://registry.npm.taobao.org';
 
-
 /**
  * yon --version || yon -v
  */
-const ver = process.argv[2];
-if(ver == '-v' || ver == '--version') {
+const opt = process.argv[2];
+if(opt == '-v' || opt == '--version') {
     console.log( 'Yonyou Package Manager(yon) : v' + pkgFile.version );
     process.exit(0);
 }
@@ -38,8 +29,7 @@ if(ver == '-v' || ver == '--version') {
 /**
  * yon --help || yon -h
  */
- const help = process.argv[2];
- if(help == '-h' || help == '--help' || help == undefined) {
+ if(opt == '-h' || opt == '--help' || opt == undefined) {
      console.log(
    `
    Usage:
@@ -69,274 +59,59 @@ if(ver == '-v' || ver == '--version') {
      process.exit(0);
  }
 
-const orignalArgv = process.argv.slice(3);
-const argv = parseArgs(orignalArgv, {
-  string: [
-    'root',
-    'registry',
-    'prefix',
-    'forbidden-licenses',
-    'custom-china-mirror-url',
-    // {"http://a.com":"http://b.com"}
-    'tarball-url-mapping',
-  ],
-  boolean: [
-    'version',
-    'help',
-    'production',
-    'global',
-    'save',
-    'save-dev',
-    'save-optional',
-    // Saved dependencies will be configured with an exact version rather than using npm's default semver range operator.
-    'save-exact',
-    'china',
-    'ignore-scripts',
-    'detail',
-    'trace',
-    'engine-strict',
-    'flatten',
-    'registry-only',
-  ],
-  alias: {
-    // npm install [-S|--save|-D|--save-dev|-O|--save-optional] [-E|--save-exact] [-d|--detail]
-    S: 'save',
-    D: 'save-dev',
-    O: 'save-optional',
-    E: 'save-exact',
-    v: 'version',
-    h: 'help',
-    g: 'global',
-    c: 'china',
-    r: 'registry',
-    d: 'detail',
-  },
-});
+const IP_Req = thunkify(request);
+const Ping = thunkify(tcpp.ping);
+const Exec = thunkify(exec);
 
+co(function* (){
+    //IP判断 - 耗时暂取消
+    /*
+    const IP_Response = yield IP_Req('https://api.ipify.org?format=json')
+    const IP_Body = IP_Response[IP_Response.length - 1]
+    const IP_ADDRESS = JSON.parse(IP_Body)['ip'];
+    const IP_REG = new RegExp(/^123\.103/);
+    if(IP_REG.test(IP_ADDRESS)){
+        console.log('内网')
+    }
+    */
 
-const pkgs = [];
-
-if (process.env.NPMINSTALL_BY_UPDATE) {
-  // ignore all package names on update
-  argv._ = [];
-}
-
-for (const name of argv._) {
-  const p = npa(String(name));
-  pkgs.push({ name: p.name, version: p.rawSpec, type: p.type });
-}
-
-let root = argv.root || process.cwd();
-if (Array.isArray(root)) {
-  // use last one, e.g.: $ npminstall --root=abc --root=def
-  root = root[root.length - 1];
-}
-const production = argv.production || process.env.NODE_ENV === 'production';
-let cacheDir = argv.cache === false ? '' : null;
-if (production) {
-  cacheDir = '';
-}
-
-let forbiddenLicenses = argv['forbidden-licenses'];
-forbiddenLicenses = forbiddenLicenses ? forbiddenLicenses.split(',') : null;
-
-const flatten = argv.flatten;
-
-// if in china, will automatic using chines registry and mirros.
-const inChina = argv.china || !!process.env.npm_china;
-// if exists, override default china mirror url
-const customChinaMirrorUrl = argv['custom-china-mirror-url'];
-
-const env = {
-    npm_config_argv: JSON.stringify({
-      remain: [],
-      cooked: orignalArgv,
-      original: orignalArgv,
-    }),
-}
-// https://github.com/npm/npm/blob/2005f4ce11f6cdf142f8a77f4f7ee4996000fb57/lib/utils/lifecycle.js#L67
-env.npm_node_execpath = env.NODE = process.env.NODE || process.execPath;
-env.npm_execpath = require.main.filename;
-
-// package's npm script can get root from `env.npm_rootpath`
-env.npm_rootpath = process.env.npm_rootpath || root;
-
-// npm cli will auto set options to npm_xx env.
-for (const key in argv) {
-  const value = argv[key];
-  if (value && typeof value === 'string') {
-    env['npm_config_' + key] = value;
-  }
-}
-
-debug('argv: %j, env: %j', argv, env);
-
-const tping = thunkify(tcpp.ping);
-co(function* () {
-
-    const tp_res = yield tping({
+    // Ping内网
+    const Ping_Response = yield Ping({
         address:IPCOMPANY,
-        timeout:100,
+        timeout:50,
         attempts:1
     })
-    let registry = tp_res.avg ? YON_MIRROR : DEAFAULT_MIRROR;
-    env.npm_config_registry = registry;
-    console.log(chalk.green(registry));
+    let registry = Ping_Response.avg ? YON_MIRROR : DEAFAULT_MIRROR;
 
-  let binaryMirrors = {};
-
-  if (inChina) {
-    binaryMirrors = yield utils.getBinaryMirrors(registry);
-    if (customChinaMirrorUrl) {
-      for (const key in binaryMirrors) {
-        const item = binaryMirrors[key];
-        if (item.host) {
-          item.host = item.host.replace(globalConfig.chineseMirrorUrl, customChinaMirrorUrl);
-        }
-      }
-    }
-
-    // set env
-    for (const key in binaryMirrors.ENVS) {
-      env[key] = binaryMirrors.ENVS[key];
-      if (customChinaMirrorUrl) {
-        env[key] = env[key].replace(globalConfig.chineseMirrorUrl, customChinaMirrorUrl);
-      }
-    }
-  }
-
-  const config = {
-    root,
-    registry,
-    pkgs,
-    production,
-    cacheDir,
-    env,
-    binaryMirrors,
-    forbiddenLicenses,
-    flatten,
-  };
-  config.strictSSL = getStrictSSL();
-  config.ignoreScripts = argv['ignore-scripts'] || getIgnoreScripts();
-  config.detail = argv.detail;
-  config.trace = argv.trace;
-  config.engineStrict = argv['engine-strict'];
-  config.registryOnly = argv['registry-only'];
-  if (config.production || argv.global) {
-    // make sure show detail on production install or global install
-    config.detail = true;
-  }
-
-  if (argv['tarball-url-mapping']) {
-    const tarballUrlMapping = JSON.parse(argv['tarball-url-mapping']);
-    config.formatNpmTarbalUrl = function formatNpmTarbalUrl(url) {
-      for (const fromUrl in tarballUrlMapping) {
-        const toUrl = tarballUrlMapping[fromUrl];
-        url = url.replace(fromUrl, toUrl);
-      }
-      return url;
-    };
-  }
-
-  // -g install to npm's global prefix
-  if (argv.global) {
-    // support custom prefix for global install
-    const meta = utils.getGlobalInstallMeta(argv.prefix);
-    config.targetDir = meta.targetDir;
-    config.binDir = meta.binDir;
-    yield installGlobal(config);
-  } else {
-    if (pkgs.length === 0) {
-      if (config.production) {
-        // warning when `${root}/node_modules` exists
-        const nodeModulesDir = path.join(root, 'node_modules');
-        if (yield fs.exists(nodeModulesDir)) {
-          console.error(chalk.yellow(`npminstall WARN node_modules exists: ${nodeModulesDir}`));
-        }
-      }
-      const pkgFile = path.join(root, 'package.json');
-      const exists = yield fs.exists(pkgFile);
-      if (!exists) {
-        console.warn(chalk.yellow(`npminstall WARN package.json not exists: ${pkgFile}`));
-      }
-    }
-    yield installLocal(config);
-    if (pkgs.length > 0) {
-      // support --save, --save-dev and --save-optional
-      if (argv.save) {
-        yield updateDependencies(root, pkgs, 'dependencies', argv['save-exact'], config.remoteNames);
-      } else if (argv['save-dev']) {
-        yield updateDependencies(root, pkgs, 'devDependencies', argv['save-exact'], config.remoteNames);
-      } else if (argv['save-optional']) {
-        yield updateDependencies(root, pkgs, 'optionalDependencies', argv['save-exact'], config.remoteNames);
-      }
-    }
-  }
-
-  process.on('exit', code => {
-    if (code !== 0) {
-      fs.writeFileSync(path.join(root, 'npminstall-debug.log'), util.inspect(config, { depth: 2 }));
-    }
-  });
-}).catch(err => {
-  console.error(chalk.red(err.stack));
-  console.error(chalk.yellow('npminstall version: %s'), require('../package.json').version);
-  console.error(chalk.yellow('npminstall args: %s'), process.argv.join(' '));
-  process.exit(1);
-});
-
-function getVersionSavePrefix() {
-  try {
-    return execSync('npm config get save-prefix').toString().trim();
-  } catch (err) {
-    debug(`exec npm config get save-prefix ERROR: ${err.message}`);
-    return '^';
-  }
-}
-
-function getStrictSSL() {
-  try {
-    const strictSSL = execSync('npm config get strict-ssl').toString().trim();
-    return strictSSL !== 'false';
-  } catch (err) {
-    debug(`exec npm config get strict-ssl ERROR: ${err.message}`);
-    return true;
-  }
-}
-
-function getIgnoreScripts() {
-  try {
-    const ignoreScripts = execSync('npm config get ignore-scripts').toString().trim();
-    return ignoreScripts === 'true';
-  } catch (err) {
-    debug(`exec npm config get ignore-scripts ERROR: ${err.message}`);
-    return false;
-  }
-}
-
-function* updateDependencies(root, pkgs, propName, saveExact, remoteNames) {
-  const savePrefix = saveExact ? '' : getVersionSavePrefix();
-  const pkgFile = path.join(root, 'package.json');
-  const pkg = yield utils.readJSON(pkgFile);
-  const deps = pkg[propName] = pkg[propName] || {};
-  for (const item of pkgs) {
-    if ([ 'remote', 'hosted', 'git' ].indexOf(item.type) >= 0) {
-      // if install from remote or git and don't specified name
-      // get package's name from `remoteNames`
-      item.name
-        ? deps[item.name] = item.version
-        : deps[remoteNames[item.version]] = item.version;
+    if(Ping_Response.avg) {
+        console.log(chalk.dim('Yonyou Mirror Downloading...\n'));
     } else {
-      const pkgDir = item.type === 'local' ? item.version : path.join(root, 'node_modules', item.name);
-      const itemPkg = yield utils.readJSON(path.join(pkgDir, 'package.json'));
-      deps[itemPkg.name] = `${savePrefix}${itemPkg.version}`;
+        console.log(chalk.dim('CNPM Mirror Downloading...\n'));
     }
-  }
-  // sort pkg[propName]
-  const newDeps = {};
-  for (const key of Object.keys(deps).sort()) {
-    newDeps[key] = deps[key];
-  }
-  pkg[propName] = newDeps;
-  yield fs.writeFile(pkgFile, JSON.stringify(pkg, null, 2) + '\n');
-}
+
+
+    const argvs = process.argv;
+    let arg_install = `npm --registry=${registry} `;
+    if(argvs[2] == 'i' || argvs[2] == 'install'){
+        const argv_part = argvs.slice(2).join(' ');
+        arg_install += argv_part;
+    }
+
+    // execSync(arg_install);
+    const spinner = ora().start();
+    spinner.color = 'green';
+    spinner.text = 'Installing package ⬇️... If happen error, call me, my mobile is 186...😝';
+    var data = yield Exec(arg_install);
+    console.log(chalk.bold('\n\nInstall Info:\n' + data[0]));
+    console.log(chalk.yellow('Warn Info:\n' + data[1]));
+    console.log(chalk.green(`√ Finish, Happy enjoy coding!`));
+    spinner.stop();
+    process.exit(1);
+
+}).catch(err => {
+    console.error(chalk.red('\n' + err));
+    // console.error(chalk.red(err.stack));
+    console.error(chalk.yellow('yon version: %s'), pkgFile.version);
+    console.error(chalk.yellow('yon args: %s'), process.argv.slice(2).join(' '));
+    process.exit(1);
+});
